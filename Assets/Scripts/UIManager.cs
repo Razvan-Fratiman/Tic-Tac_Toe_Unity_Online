@@ -1,24 +1,25 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using TMPro;
+using System.Net.Sockets;
+using System;
 
 public class UIManager : MonoBehaviour
 {
-    [SerializeField] private string gameSceneName = "SampleScene"; // Your game scene name
-    [SerializeField] private TMP_InputField portInputField; // Reference to the port input field
+    [SerializeField] private string gameSceneName = "SampleScene";
+    [SerializeField] private TMP_InputField portInputField;
+    [SerializeField] private GameObject loadingPanel; // Optional: Show loading UI
 
-    // Define valid port range
-    private const int MIN_PORT = 1024; // Common starting point for dynamic ports
-    private const int MAX_PORT = 65535; // Maximum possible TCP/UDP port
+    private const int MIN_PORT = 1024;
+    private const int MAX_PORT = 65535;
 
     private void Start()
     {
-        // Optional: Set a default port number in the input field when the scene loads
         if (portInputField != null)
         {
             if (string.IsNullOrEmpty(portInputField.text))
             {
-                portInputField.text = "7777"; // Pre-fill with a common port
+                portInputField.text = "9999";
             }
         }
     }
@@ -28,41 +29,79 @@ public class UIManager : MonoBehaviour
         string portText = portInputField.text.Trim();
         int portNumber;
 
-        // 1. Check if the input is empty
+        // Validation (same as before)
         if (string.IsNullOrEmpty(portText))
         {
-            Debug.LogWarning("Port number cannot be empty!"); // Log to console
-            return; // Stop the function here, do not load the game
+            Debug.LogWarning("Port number cannot be empty!");
+            return;
         }
 
-        // 2. Try to parse the input as an integer
         if (!int.TryParse(portText, out portNumber))
         {
-            Debug.LogWarning("Invalid port number. Please enter digits only."); // Log to console
+            Debug.LogWarning("Invalid port number. Please enter digits only.");
             return;
         }
 
-        // 3. Validate the port number range
         if (portNumber < MIN_PORT || portNumber > MAX_PORT)
         {
-            Debug.LogWarning($"Port must be between {MIN_PORT} and {MAX_PORT}."); // Log to console
+            Debug.LogWarning($"Port must be between {MIN_PORT} and {MAX_PORT}.");
             return;
         }
-
-        // If all validations pass, proceed to load the game scene
-        Debug.Log($"Starting game with port: {portNumber}");
-        SceneManager.LoadScene(gameSceneName);
-
-        // Optional: Save the port number for the next session
         PlayerPrefs.SetInt("LastUsedPort", portNumber);
         PlayerPrefs.Save();
+        SceneManager.LoadScene(gameSceneName);
+        // Test connection before loading the scene
+        //TestConnectionAndLoadScene(portNumber);
+    }
+
+    //private void TestConnectionAndLoadScene(int portNumber)
+    //{
+    //    // Optional: Show loading UI
+    //    if (loadingPanel != null)
+    //        loadingPanel.SetActive(true);
+
+    //    try
+    //    {
+    //        // Test the connection
+    //        TcpClient testClient = new TcpClient();
+    //        testClient.Connect("127.0.0.1", portNumber);
+
+    //        Debug.Log($"Connection successful! Loading game scene...");
+
+    //        // Save the port and load the scene
+    //        PlayerPrefs.SetInt("LastUsedPort", portNumber);
+    //        PlayerPrefs.Save();
+
+    //        // Clean up test connection
+    //        testClient.Close();
+
+    //        // Load the game scene
+    //        SceneManager.LoadScene(gameSceneName);
+    //    }
+    //    catch (Exception e)
+    //    {
+    //        Debug.LogError($"Cannot connect to server on port {portNumber}: {e.Message}");
+
+    //        // Hide loading UI if connection failed
+    //        if (loadingPanel != null)
+    //            loadingPanel.SetActive(false);
+
+    //        // Optionally show error message to user
+    //        ShowErrorMessage($"Cannot connect to server on port {portNumber}. Make sure the server is running.");
+    //    }
+    //}
+
+    private void ShowErrorMessage(string message)
+    {
+        // You can implement this to show error UI to the user
+        Debug.LogWarning(message);
+        // Example: errorText.text = message; errorPanel.SetActive(true);
     }
 
     public void ExitGame()
     {
         Debug.Log("Exit Game button clicked! Quitting application...");
         Application.Quit();
-
 #if UNITY_EDITOR
         UnityEditor.EditorApplication.isPlaying = false;
 #endif

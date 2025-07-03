@@ -1,85 +1,89 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Events;
+using UnityEngine.UI; // Add this for UI components
+using TMPro; // Add this for TextMeshPro
 using System;
+using System.Net.Sockets;  // For TcpClient and NetworkStream
+using System.Text;        // For Encoding.UTF8
 
 public class Board : MonoBehaviour
 {
-    [Header("Input Settings")]
+    [Header("Input Settings : ")]
     [SerializeField] private LayerMask boxesLayerMask;
     [SerializeField] private float touchRadius;
 
-    [Header("Mark Sprites")]
+    [Header("Mark Sprites : ")]
     [SerializeField] private Sprite spriteX;
     [SerializeField] private Sprite spriteO;
 
-    [Header("Mark Colors")]
+    [Header("Mark Colors : ")]
     [SerializeField] private Color colorX;
     [SerializeField] private Color colorO;
 
-    [Header("Game State")]
-    [SerializeField] private bool enableInput = true; // Add this to control input
+    [Header("UI References : ")]
+    [SerializeField] private Button restartButton; // Reference to the restart button
+    [SerializeField] private TextMeshProUGUI winnerText; // Reference to the winner display text
+
+    [System.Serializable]
+    public class GameMove
+    {
+        public string action = "new-move";
+        public int position;
+        public string mark;
+    }
 
     public Mark[] marks;
     private Camera cam;
     private Mark currentMark;
-    private Box[] allBoxes;
+    private bool gameEnded = false; // Track if game has ended
 
-    // Game state management
-    private bool gameEnded = false;
-    private bool waitingForServerResponse = false;
+    private TcpClient gameClient;
+    private NetworkStream clientStream;
+    private int serverPort;
 
-    private void Awake()
-    {
-        allBoxes = GetComponentsInChildren<Box>();
-        if (allBoxes.Length == 0)
-        {
-            Debug.LogError("No Box components found as children of this Board GameObject.");
-        }
-    }
 
     private void Start()
     {
+
         cam = Camera.main;
         currentMark = Mark.X;
         marks = new Mark[9];
-
-        for (int i = 0; i < marks.Length; i++)
+        
+        // Set up the restart button if assigned
+        if (restartButton != null)
         {
-            marks[i] = Mark.None;
+            restartButton.onClick.AddListener(RestartGame);
+            serverPort = PlayerPrefs.GetInt("LastUsedPort", 9999);
+            ConnectToServer();
         }
 
-        SetupNetworking();
-    }
-
-    private void SetupNetworking()
-    {
-        if (NetworkClient.Instance != null)
+        // Initialize winner text
+        if (winnerText != null)
         {
-            NetworkClient.Instance.OnMessageReceived += HandleServerMessage;
-            Debug.Log("Board subscribed to NetworkClient.OnMessageReceived.");
-            SendBoardStateToServer("initial_state", null);
-        }
-        else
-        {
-            Debug.LogError("NetworkClient instance not found.");
+            winnerText.text = ""; // Start with empty text
         }
     }
 
-    private void OnDestroy()
+    private void ConnectToServer()
     {
-        if (NetworkClient.Instance != null)
+        try
         {
-            NetworkClient.Instance.OnMessageReceived -= HandleServerMessage;
+            gameClient = new TcpClient("127.0.0.1", serverPort);
+            clientStream = gameClient.GetStream();
+            Debug.Log($"Connected to server on port {serverPort}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.Log($"Game connection failed: {e.Message}");
+            // Handle offline mode or retry logic here
         }
     }
 
     private void Update()
     {
-        // Only process input if game hasn't ended and we're not waiting for server
-        if (!enableInput || gameEnded || waitingForServerResponse)
-            return;
-
-        if (Mouse.current != null && Mouse.current.leftButton.wasReleasedThisFrame)
+        // Only allow input if game hasn't ended
+        if (!gameEnded && Mouse.current != null && Mouse.current.leftButton.wasReleasedThisFrame)
         {
             Vector2 touchPosition = cam.ScreenToWorldPoint(Mouse.current.position.ReadValue());
             Collider2D hit = Physics2D.OverlapCircle(touchPosition, touchRadius, boxesLayerMask);
@@ -90,262 +94,124 @@ public class Board : MonoBehaviour
                 if (hitBox != null)
                 {
                     HitBox(hitBox);
+                    // Send JSON to server when hitbox is triggered
+                    SendJsonMove(hitBox);
+                    //Debug.Log(marks[hitBox.index]);
                 }
             }
         }
     }
 
-    private void HitBox(Box box)
+    private bool IsConnected()
     {
-        if (!box.isMarked && !gameEnded)
-        {
-            // Temporarily update local state for sending to server
-            Mark previousMark = marks[box.index];
-            marks[box.index] = currentMark;
-
-            // Disable input until server responds
-            waitingForServerResponse = true;
-
-            SendBoardStateToServer("new_move", currentMark.ToString());
-
-            // Store previous state in case we need to revert on invalid move
-            // (You might want to implement a proper undo mechanism)
-        }
+        return gameClient != null &&
+               gameClient.Connected &&
+               clientStream != null;
     }
 
-    private async void SendBoardStateToServer(string actionType, string rolePlayed)
+    void SendJsonMove(Box box)
     {
-        if (NetworkClient.Instance == null)
+        if (!IsConnected())
         {
-            Debug.LogError("NetworkClient.Instance is not found.");
-            waitingForServerResponse = false;
+            Debug.LogWarning("Not connected to server");
             return;
         }
 
-        if (!NetworkClient.Instance.isConnected)
+        // Create structured move data
+        GameMove move = new GameMove
         {
-            Debug.LogWarning("NetworkClient is not connected. Attempting to reconnect...");
-            await NetworkClient.Instance.ConnectToServer();
-            if (!NetworkClient.Instance.isConnected)
-            {
-                Debug.LogError("Failed to connect to server.");
-                waitingForServerResponse = false;
-                return;
-            }
-        }
-
-        TicTacToeMessage message = new TicTacToeMessage
-        {
-            action = actionType,
-            role = rolePlayed,
-            board = new GameMap()
+            position = box.index,
+            mark = marks[box.index].ToString()
         };
 
-        // Populate board state
-        for (int i = 0; i < marks.Length; i++)
-        {
-            string markChar = marks[i] switch
-            {
-                Mark.X => "X",
-                Mark.O => "O",
-                _ => "-"
-            };
-            message.board.SetValue(i, markChar);
-        }
-
-        await NetworkClient.Instance.SendTicTacToeMessage(message);
-    }
-
-    private void HandleServerMessage(string jsonMessage)
-    {
+        // Convert to JSON
+        string json = JsonUtility.ToJson(move);
+        byte[] jsonBytes = Encoding.UTF8.GetBytes(json + "\n"); // Add newline terminator
+        Debug.Log(jsonBytes);
         try
         {
-            TicTacToeMessage receivedMessage = JsonUtility.FromJson<TicTacToeMessage>(jsonMessage);
-            Debug.Log($"Received message - Action: {receivedMessage.action}, Role: {receivedMessage.role}");
-
-            // Re-enable input after server response (unless game ended)
-            waitingForServerResponse = false;
-
-            switch (receivedMessage.action)
-            {
-                case "new_board":
-                    HandleNewBoard(receivedMessage);
-                    break;
-
-                case var action when action.StartsWith("win_"):
-                    HandleGameWin(receivedMessage);
-                    break;
-
-                case "draw":
-                    HandleGameDraw(receivedMessage);
-                    break;
-
-                case "invalid_move":
-                    HandleInvalidMove(receivedMessage);
-                    break;
-
-                case "disconnect":
-                    HandleOpponentDisconnect();
-                    break;
-
-                default:
-                    Debug.LogWarning($"Unhandled server action: {receivedMessage.action}");
-                    break;
-            }
+            clientStream.Write(jsonBytes, 0, jsonBytes.Length);
+            Debug.Log($"Sent JSON: {json}");
         }
         catch (Exception e)
         {
-            Debug.LogError($"Failed to parse server message: {e.Message}\nJSON: {jsonMessage}");
-            waitingForServerResponse = false;
+            Debug.LogError($"Failed to send move: {e.Message}");
+            // Handle disconnect
         }
     }
 
-    private void HandleNewBoard(TicTacToeMessage message)
+    //private void SendMoveToServer(Box boxIndex)
+    //{
+    //    if (gameClient != null && gameClient.Connected && clientStream != null)
+    //    {
+    //        string json = JsonUtility.ToJson(move);
+    //        string json = $"{{\"action\":\"new-move\",\"board\":{{\"{boxIndex.index}\":\"{marks[boxIndex.index]}\"}}}}";
+    //        networkClient.SendCustomMessage(json);
+    //        Debug.Log($"Sent JSON: {json}");
+    //    }
+    //}
+
+
+    private void HitBox(Box box)
     {
-        if (message.board != null)
+        if (!box.isMarked)
         {
-            UpdateBoardFromServer(message.board);
-            SwitchPlayer(); // Update turn after successful move
-        }
-    }
+            marks[box.index] = currentMark;
+            box.SetAsMarked(GetSprite(), currentMark, GetColor());
 
-    private void HandleGameWin(TicTacToeMessage message)
-    {
-        gameEnded = true;
-        enableInput = false;
-
-        if (message.board != null)
-        {
-            UpdateBoardFromServer(message.board);
-        }
-
-        string winner = message.role ?? "Unknown";
-        Debug.Log($"Game Over! {winner} Wins!");
-
-        // TODO: Show win UI
-        ShowGameEndUI($"{winner} Wins!");
-    }
-
-    private void HandleGameDraw(TicTacToeMessage message)
-    {
-        gameEnded = true;
-        enableInput = false;
-
-        if (message.board != null)
-        {
-            UpdateBoardFromServer(message.board);
-        }
-
-        Debug.Log("Game Over! It's a Draw!");
-        ShowGameEndUI("It's a Draw!");
-    }
-
-    private void HandleInvalidMove(TicTacToeMessage message)
-    {
-        Debug.LogWarning("Server rejected the move");
-
-        // Revert local state if server provides correct board state
-        if (message.board != null)
-        {
-            UpdateBoardFromServer(message.board);
-        }
-
-        // TODO: Show invalid move feedback to player
-    }
-
-    private void HandleOpponentDisconnect()
-    {
-        gameEnded = true;
-        enableInput = false;
-        Debug.Log("Opponent disconnected. Game Over.");
-        ShowGameEndUI("Opponent Disconnected");
-    }
-
-    private void UpdateBoardFromServer(GameMap serverBoardState)
-    {
-        if (allBoxes == null || allBoxes.Length == 0)
-        {
-            Debug.LogError("Cannot update UI: allBoxes array is not initialized.");
-            return;
-        }
-
-        // Update local logical state
-        for (int i = 0; i < marks.Length; i++)
-        {
-            string markChar = serverBoardState.GetValue(i);
-            marks[i] = markChar switch
+            bool won = CheckIfWin();
+            if (won)
             {
-                "X" => Mark.X,
-                "O" => Mark.O,
-                _ => Mark.None
-            };
-        }
-
-        // Update visual representation
-        foreach (Box box in allBoxes)
-        {
-            string markChar = serverBoardState.GetValue(box.index);
-
-            if (markChar == "X" && !box.isMarked)
-            {
-                box.SetAsMarked(spriteX, Mark.X, colorX);
+                Debug.Log(currentMark.ToString() + " Wins!");
+                DisplayWinner(currentMark.ToString() + " Wins!");
+                gameEnded = true;
+                return;
             }
-            else if (markChar == "O" && !box.isMarked)
+            if (CheckIfDraw())
             {
-                box.SetAsMarked(spriteO, Mark.O, colorO);
+                Debug.Log("It's a Draw!");
+                DisplayWinner("It's a Draw!");
+                gameEnded = true;
+                return;
             }
-            else if (markChar == "-" && box.isMarked)
-            {
-                box.ResetBox();
-            }
+            SwitchPlayer();
         }
-
-        Debug.Log("Board updated from server state.");
-    }
-
-    private void ShowGameEndUI(string message)
-    {
-        // TODO: Implement game end UI
-        // This could show a popup with the result and options to restart or return to menu
-        Debug.Log($"Game End UI should show: {message}");
     }
 
     public void RestartGame()
     {
+        // Reset game state
         gameEnded = false;
-        enableInput = true;
-        waitingForServerResponse = false;
         currentMark = Mark.X;
 
-        // Reset board state
+        // Clear the marks array
         for (int i = 0; i < marks.Length; i++)
         {
             marks[i] = Mark.None;
         }
 
-        // Reset visual state
-        foreach (Box box in allBoxes)
+        // Reset all boxes
+        Box[] boxes = FindObjectsByType<Box>(FindObjectsSortMode.None);
+        foreach (Box box in boxes)
         {
             box.ResetBox();
         }
 
-        // Notify server of restart (if implemented)
-        SendBoardStateToServer("restart_game", null);
+        Debug.Log("Game Restarted!");
+
+        // Clear winner text
+        if (winnerText != null)
+        {
+            winnerText.text = "";
+        }
     }
 
-    // Helper methods
-    private bool AreBoxesMatched(int i, int j, int k)
+    private void DisplayWinner(string message)
     {
-        Mark m = currentMark;
-        return (marks[i] == m && marks[j] == m && marks[k] == m);
-    }
-
-    private bool CheckIfWin()
-    {
-        return
-            AreBoxesMatched(0, 1, 2) || AreBoxesMatched(3, 4, 5) || AreBoxesMatched(6, 7, 8) ||
-            AreBoxesMatched(0, 3, 6) || AreBoxesMatched(1, 4, 7) || AreBoxesMatched(2, 5, 8) ||
-            AreBoxesMatched(0, 4, 8) || AreBoxesMatched(2, 4, 6);
+        if (winnerText != null)
+        {
+            winnerText.text = message;
+        }
     }
 
     private bool CheckIfDraw()
@@ -353,9 +219,26 @@ public class Board : MonoBehaviour
         for (int i = 0; i < marks.Length; i++)
         {
             if (marks[i] == Mark.None)
+            {
                 return false;
+            }
         }
         return true;
+    }
+
+    private bool AreBoxesMatched(int i, int j, int k)
+    {
+        Mark m = currentMark;
+        bool matched = (marks[i] == m && marks[j] == m && marks[k] == m);
+        return matched;
+    }
+
+    private bool CheckIfWin()
+    {
+        return
+        AreBoxesMatched(0, 1, 2) || AreBoxesMatched(3, 4, 5) || AreBoxesMatched(6, 7, 8) ||
+        AreBoxesMatched(0, 3, 6) || AreBoxesMatched(1, 4, 7) || AreBoxesMatched(2, 5, 8) ||
+        AreBoxesMatched(0, 4, 8) || AreBoxesMatched(2, 4, 6);
     }
 
     private void SwitchPlayer()
