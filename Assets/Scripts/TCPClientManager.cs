@@ -15,7 +15,8 @@ using System.Threading.Tasks;
 public class TCPClientManager : Singleton<TCPClientManager>
 {
     public int serverPort = -1;
-    private string serverIP = "172.19.42.135";
+    //private string serverIP = "172.19.42.135"; // WSL IP
+    private string serverIP = "localhost";
 
     private TcpClient client;
     private NetworkStream stream;
